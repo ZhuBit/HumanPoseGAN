@@ -1,5 +1,6 @@
 data/npz/*
 data/videos/*
+data/
 models/*
 .idea
 venv
