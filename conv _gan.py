@@ -2,138 +2,83 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 import numpy as np
 import os
 import matplotlib.pyplot as plt
 from dataset import HPFrameDataset
 from visualizer_html import visualize_and_save_frame_with_belief
+class ConvolutionalDiscriminator(nn.Module):
+    def __init__(self, dropout_rate=0.1):
+        super(ConvolutionalDiscriminator, self).__init__()
+        # 3x17
+        self.conv1 = nn.Conv2d(1, 64, kernel_size=(3, 5), stride=2, padding=1)
+        self.dropout1 = nn.Dropout2d(dropout_rate)
 
-class HumanPoseDiscriminator(nn.Module):
-    def __init__(self, dropout_rate=0.3):
-        super(HumanPoseDiscriminator, self).__init__()
-        # (17 keypoints * 3 coordinates)
-        self.model = nn.Sequential(
-            nn.Linear(51, 128),
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=(3, 5), stride=2, padding=1)
+        self.dropout2 = nn.Dropout2d(dropout_rate)
+        self.bn2 = nn.BatchNorm2d(128)
+
+        self.conv3 = nn.Conv2d(128, 256, kernel_size=(3, 5), stride=2, padding=1)
+        self.dropout3 = nn.Dropout2d(dropout_rate)
+        self.bn3 = nn.BatchNorm2d(256)
+
+        self.conv4 = nn.Conv2d(256, 512, kernel_size=(3, 5), stride=2, padding=1)
+        self.bn4 = nn.BatchNorm2d(512)
+        self.dropout4 = nn.Dropout2d(dropout_rate)
+
+        self.fc = nn.Linear(512 * 1 * 2, 1)
+
+    def forward(self, x):
+        x = x.view(-1, 1, 3, 17)
+
+        x = F.leaky_relu(self.dropout1(self.conv1(x)), 0.2)
+        x = F.leaky_relu(self.dropout2(self.bn2(self.conv2(x))), 0.2)
+        x = F.leaky_relu(self.dropout3(self.bn3(self.conv3(x))), 0.2)
+        x = F.leaky_relu(self.dropout4(self.bn4(self.conv4(x))), 0.2)
+
+        x = torch.flatten(x, 1)
+        x = torch.sigmoid(self.fc(x))
+        return x
+
+class ConvolutionalGenerator(nn.Module):
+    def __init__(self, latent_dim=100, dropout_rate=0.1):
+        super(ConvolutionalGenerator, self).__init__()
+        self.init_size = 512
+        self.fc1 = nn.Linear(latent_dim, self.init_size * 1 * 2)
+
+        self.conv_blocks = nn.Sequential(
+            nn.BatchNorm1d(self.init_size),
+            nn.Upsample(scale_factor=2),
+
+            nn.Conv1d(self.init_size, 256, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm1d(256, 0.8),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(dropout_rate),
 
-            nn.Linear(128, 64),
+            nn.Upsample(scale_factor=2),
+            nn.Conv1d(256, 128, kernel_size=3, stride=1, padding=1),
+
+            nn.BatchNorm1d(128, 0.8),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout(dropout_rate),
 
-            nn.Linear(64, 32),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(32, 1),
-            nn.Sigmoid()
-        )
-
-        # (17 keypoints * 3 coordinates)
-        """  self.model = nn.Sequential(
-            nn.Linear(51, 128),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(128, 256),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(256, 128),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(128, 64),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(64, 32),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(32, 1),
-            nn.Sigmoid()
-        )"""
-
-    def forward(self, frame):
-        validity = self.model(frame)
-        return validity
-
-class HumanPoseGenerator(nn.Module):
-    def __init__(self, dropout_rate=0.0):
-        super(HumanPoseGenerator, self).__init__()
-        self.model = nn.Sequential(
-            nn.Linear(100, 128),
-
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(128, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(256, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(512, 51),  # 17 keypoints * 3 coordinates
+            nn.Conv1d(128, 3, kernel_size=3, stride=1, padding=1),
             nn.Tanh()
         )
-        """super(HumanPoseGenerator, self).__init__()
-         6x self.model = nn.Sequential(
-            nn.Linear(100, 256),
-
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(256, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(512, 1024),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(1024, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(512, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(256, 51),
-            nn.Tanh()
-        )"""
-
-        """self.model = nn.Sequential(
-            nn.Linear(100, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(256, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(512, 1024),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(1024, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(512, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_rate),
-
-            nn.Linear(256, 51),  # 17 keypoints * 3 coordinates
-            # nn.Tanh()
-        )"""
 
     def forward(self, z):
-        pose = self.model(z)
-        return pose
+
+        out = self.fc1(z)
+        out = out.view(out.shape[0], 512, 1, 2)
+
+        # Pass through conv blocks
+        for layer in self.conv_blocks:
+            out = layer(out)
+
+        # Final reshape to match the output size
+        out = out.view(out.shape[0], 51)
+        return out
 
 if __name__ == '__main__':
     if torch.cuda.is_available():
@@ -144,7 +89,7 @@ if __name__ == '__main__':
     train_data_path = 'data/npz'
 
 
-    output_dir = ("data/outputs/GAN+4GLayers+4DLay+0,0,3drp+128btch+Than+NoDecayG+NoDropGEner")
+    output_dir = "data/outputs/GAN+NoNoise"
     #output_dir = "data/outputs/TEST"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -165,10 +110,10 @@ if __name__ == '__main__':
     #test_dataset = HPFrameDataset(test_data_path)
 
 
-    generator = HumanPoseGenerator().to(device)
-    discriminator = HumanPoseDiscriminator().to(device)
+    generator = ConvolutionalGenerator().to(device)
+    discriminator = ConvolutionalDiscriminator().to(device)
 
-    optimizer_G = optim.Adam(generator.parameters(), lr=0.002, betas=(0.5, 0.999))
+    optimizer_G = optim.Adam(generator.parameters(), lr=0.002, betas=(0.5, 0.999), weight_decay=1e-5)
     optimizer_D = optim.Adam(discriminator.parameters(), lr=0.002, betas=(0.5, 0.999), weight_decay=1e-5)
     adversarial_loss = torch.nn.BCELoss()
 
@@ -205,10 +150,10 @@ if __name__ == '__main__':
             valid = torch.ones((item.size(0), 1), requires_grad=False).to(device)
             fake = torch.zeros((item.size(0), 1), requires_grad=False).to(device)
 
-            """if torch.rand(1).item() < apply_noise_prob:
+            if torch.rand(1).item() < apply_noise_prob:
                 for n in range(item.shape[0]):  # Iterate over each item in the batch
                     num_keypoints_to_noise = torch.randint(0, min(5, item.shape[1] // 3),
-                                                           (1,)).item() 
+                                                           (1,)).item()
                     keypoints_indices = torch.randperm(item.shape[1] // 3)[
                                         :num_keypoints_to_noise]  # Adjusted for flattened structure
                     for kp in keypoints_indices:
@@ -216,7 +161,7 @@ if __name__ == '__main__':
                         end_index = start_index + 3
                         # Adjust noise addition for a 2D tensor
                         item[n, start_index:end_index] += noise_factor * torch.randn_like(
-                            item[n, start_index:end_index]).to(device)"""
+                            item[n, start_index:end_index]).to(device)
 
             # Train Generator
             optimizer_G.zero_grad()
@@ -302,8 +247,8 @@ if __name__ == '__main__':
             learning_rates_D.append(optimizer_D.param_groups[0]['lr'])
             accuracy = correct_predictions / total_samples
             precision = true_positives / total_predicted_positives if total_predicted_positives > 0 else 0
-            print(f"Epoch {epoch}")
-            print(f"Epoch {epoch} Batch {i}/{len(dataloader)}] [D loss: {d_loss.item()}] [G loss: {g_loss.item()}] [Accuracy: {accuracy:.2f}] [Precision: {precision:.2f}]")
+
+            print(f"[Epoch {epoch}/{num_epochs}] [Batch {i}/{len(dataloader)}] [D loss: {d_loss.item()}] [G loss: {g_loss.item()}] [Accuracy: {accuracy:.2f}] [Precision: {precision:.2f}]")
 
         average_generator_loss = sum_generator_loss / total_batches
         average_discriminator_loss = sum_discriminator_loss / total_batches
@@ -384,9 +329,3 @@ if __name__ == '__main__':
 
     plt.show()
     plt.close()
-
-
-
-
-
-
